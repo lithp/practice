@@ -15,7 +15,7 @@ class RedBlackTree:
     def insert(self, item):
         if self.root is None:
             self.root = Node(item=item, color=Color.BLACK)
-            return self.root
+            return
 
         new_node = self.root._insert(item)
         new_node._insert_repair()
@@ -32,10 +32,11 @@ class Node:
     def __init__(self, item=None, parent=None, left=None, right=None, color=None):
         self.item = item
         self.parent = parent
-        self.left = left
-        self.right = right
+        self._left = left
+        self._right = right
         self.color = color
 
+    @property
     def sibling(self):
         if not self.parent:
             return None
@@ -45,11 +46,13 @@ class Node:
             return self.parent.left
         assert False
 
+    @property
     def uncle(self):
         if not self.parent:
             return None
-        return self.parent.sibling()
+        return self.parent.sibling
 
+    @property
     def grandparent(self):
         if not self.parent:
             return None
@@ -59,6 +62,26 @@ class Node:
         if not self.parent:
             return self
         return self.parent.root()
+
+    @property
+    def left(self):
+        return self._left
+
+    @left.setter
+    def left(self, node):
+        self._left = node
+        if node:
+            node.parent = self
+
+    @property
+    def right(self):
+        return self._right
+
+    @right.setter
+    def right(self, node):
+        self._right = node
+        if node:
+            node.parent = self
 
     def check(self):
         # every node has a color
@@ -114,50 +137,40 @@ class Node:
             return
 
         def uncle_color(node):
-            if not node.uncle():
+            if not node.uncle:
                 return Color.BLACK
-            return node.uncle().color
+            return node.uncle.color
 
         # okay, our parent is RED
 
         if uncle_color(self) == Color.RED:
             # repaint both the parent and the uncle BLACK
             self.parent.color = Color.BLACK
-            self.uncle().color = Color.BLACK  # don't need to None check, RED nodes exist
-            self.grandparent().color = Color.RED
+            self.uncle.color = Color.BLACK  # don't need to None check, RED nodes exist
+            self.grandparent.color = Color.RED
 
             # fixup the grandparent, we just added a BLACK to some paths
-            self.grandparent()._insert_repair()
+            self.grandparent._insert_repair()
             return
 
         # the most complicated case
         # the parent is red but the uncle is BLACK
-        if self.grandparent().left and self == self.grandparent().left.right:
+        if self.grandparent.left and self == self.grandparent.left.right:
             rotate_left(self.parent)
             node = self.left
-        elif self.grandparent().right and self == self.grandparent().right.left:
+        elif self.grandparent.right and self == self.grandparent.right.left:
             rotate_right(self.parent)
             node = self.right
         else:
             node = self
 
-        grandparent = node.grandparent()
+        grandparent = node.grandparent
         if node == node.parent.left:
             rotate_right(grandparent)
         else:
             rotate_left(grandparent)
         node.parent.color = Color.BLACK
         grandparent.color = Color.RED
-
-    def set_left(self, left):
-        self.left = left
-        if left:
-            left.parent = self
-
-    def set_right(self, right):
-        self.right = right
-        if right:
-            right.parent = self
 
     def __repr__(self):
         items = [
@@ -214,7 +227,6 @@ def reassign_parent(node, new_node):
     assert node in (node.parent.left, node.parent.right)
     on_left = (node == node.parent.left)
 
-    new_node.parent = node.parent
     if on_left:
         node.parent.left = new_node
     else:
@@ -245,10 +257,10 @@ def rotate_left(node):
     reassign_parent(node, new_node)
 
     # you're about to go into new_node.left, so first handle the node already there
-    node.set_right(new_node.left)
+    node.right = new_node.left
 
     # move ourselves into position
-    new_node.set_left(node)
+    new_node.left = node
 
     return new_node
 
@@ -260,10 +272,10 @@ def rotate_right(node):
     reassign_parent(node, new_node)
 
     # you're about to go into new_node.right, so first handle the node already there
-    node.set_left(new_node.right)
+    node.left = new_node.right
 
     # move ourselves into position
-    new_node.set_right(node)
+    new_node.right = node
 
     return new_node
 
@@ -275,12 +287,12 @@ five = Node(item=5)
 six = Node(item=6)
 seven = Node(item=7)
 
-four.set_left(two)
-four.set_right(six)
-two.set_left(one)
-two.set_right(three)
-six.set_left(five)
-six.set_right(seven)
+four.left = two
+four.right = six
+two.left = one
+two.right = three
+six.left = five
+six.right = seven
 
 # rotation should be invertable
 original_repr = four.__repr__()
