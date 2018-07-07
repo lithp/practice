@@ -182,73 +182,56 @@ A stream can be either: None, a pair, or a thunk
 '''
 
 def always():
-    # returns success with bindings unchanged and also a continuation which recurs
-    return lambda s: (s, always())
+    def run(s):
+        while True:
+            yield s
+    return run
 
-# you could replace with with a generator? def run(s): return; yield
 def never():
-    # never succeeds
-    return lambda s: None
+    def run(s):
+        return
+        yield  # tell Python that this is a generator
+    return run
 
 def eq(left, right):
-    return lambda s: unify(s, left, right)
+    def run(s):
+        result = unify(s, left, right)
+        if result is not False:
+            yield result
+        return
+    return run
 
 def disj(*goals):
-    # only one of these has to be true
+    # only one of these must be true
     def run(s):
-        def recur(goals2):
-            goal, *rest = goals2
-            # this doesn't really work, because goal(s) could also return a stream
-            if not rest:
-                return goal(s)
-            return goal(s), lambda: recur(rest)
-        return recur(goals)
+        # careful! This is DFS, ala Prolog. We'd probably prefer BFS, ala Kanren
+        for goal in goals:
+            stream = goal(s)
+            yield from stream
     return run
 
 def conj(*goals):
-    # find solutions which cause every goal to become true
+    # every goal must be true
+    # say you manage to satisfy the first goal, you must also satisfy the rest with some
+      # part of the resulting stream
 
-    def emit(subgoals, stream):
-        # there's a stream and also a rest, we want to emit the bindings which result
-        # when we attempt to prove rest, using the bindings from stream
-
+    def emit(stream, subgoals):
+        # there's nothing else to match against, this stream is the final one!
         if not subgoals:
-            # there are no more constraints, so this is the final stream
-            return stream
+            yield from stream
+            return
 
-        # force the stream
-        while callable(stream):
-            stream = stream()
+        first, *rest = subgoals
+        for binding in stream:
+            substream = first(binding)
+            yield from emit(substream, rest)
 
-        # if there are no solutions just return, no need to check more goals
-        if stream is None:
-            return None
-
-        if isinstance(stream, dict):
-            # we've found a single solution, our solutions are only those which cause the
-            # remaining goals to succeed
-            first, *rest = subgoals
-            substream = first(stream)
-            return lambda: emit(rest, substream)
-
-        if isinstance(stream, tuple):
-            assert len(stream) == 2
-            # the first element must be a real thing, the second element is a stream
-            if stream[0] is not None and stream[0] is not False:
-                pass
-
-
-    # each of the goals will emit a stream of bindings, you want every goal to be true
-    # take the first result from the first goal and try to prove the other goals true
-    # once that fails, take the next one and repeat
     def run(s):
-        if not len(goals):
-            # there are no goals to satisfy, so clearly they're all satisfied
-            return s
         first, *rest = goals
         stream = first(s)
 
-        return emit(rest, stream)
+        # now, for every part of stream, try to satisfy the rest of the goals with it
+        yield from emit(stream, rest)
     return run
 
 # some list helpers
@@ -291,26 +274,8 @@ def append(head, tail, appended):
 
 # we have some basic goals, let's learn how to read their results:
 
-def take(stream):
-    # really should standardize on one of None, False...
-    while stream is not None and stream is not False:
-        if isinstance(stream, tuple):
-            assert len(stream) == 2
-            if stream[0] is not None and stream[0] is not False:
-                yield stream[0]
-            stream = stream[1]
-            continue
-        if callable(stream):
-            stream = stream()
-            continue
-        if isinstance(stream, dict):
-            # we've finished! there's only one answer!
-            yield stream
-            return
-
 def taken(n, stream):
-    gen = take(stream)
-    return list(itertools.islice(gen, n))
+    return list(itertools.islice(stream, n))
 
 def run(n, goal, var):
     empty_subs = {}
