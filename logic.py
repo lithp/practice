@@ -518,6 +518,24 @@ def member(elem, l):
         conj(tail(t, l), lambda: member(elem, t))
     )
 
+def append(front, back, appended):
+    '''
+    append([], X, X).
+    append([FHead|FRest], Other, [FHead|ARest]) :-
+      append(FRest, Other, ARest).
+
+    Pattern matching is pretty nice, isn't it?
+    '''
+    front_head, front_rest, appended_rest = vars(3)
+    return disj(
+        conj(null(front), eq(back, appended)),
+        conj(
+            cons(front_head, front_rest, front),
+            lambda: append(front_rest, back, appended_rest),
+            cons(front_head, appended_rest, appended)
+        )
+    )
+
 # a goal which adds a constraint
 
 @raw_goal
@@ -867,6 +885,60 @@ class TestCases(unittest.TestCase):
              ('eq', 'NOT-UNIFIABLE', 10, 5),
              ('eq', 'FAIL'),
              ('eq', 'FAIL')]
+        )
+
+    def testAppend(self):
+        left, right, appended = vars(3)
+
+        self.assertEqual(
+            run(2, append([], [1, 2, 3], [1, 2, 3]), left),
+            ['_0']
+        )
+
+        self.assertEqual(
+            run(2, append([], [1, 2, 3], appended), appended),
+            [[1, 2, 3]]
+        )
+
+        self.assertEqual(
+            run(2, append([1], [2, 3], appended), appended),
+            [[1, 2, 3]]
+        )
+
+        self.assertEqual(
+            run(2, append([1], right, [1, 2, 3]), right),
+            [[2, 3]]
+        )
+
+        self.assertEqual(
+            run(2, append([1, 2, 3], right, [1, 2, 3]), right),
+            [[]]
+        )
+
+        # TODO: asking for 2 results gets us into an infinite loop...
+        self.assertEqual(
+            run(1, append(left, [1, 2, 3], [1, 2, 3]), left),
+            [[]]
+        )
+
+        # TODO: asking for 5 results gets us into an infinite loop...
+        self.assertEqual(
+            run(4, append(left, right, [1, 2, 3]), right),
+            [
+                [1, 2, 3], [2, 3], [3], []
+            ]
+        )
+
+        self.assertEqual(
+            run(5, append(left, right, appended), left),
+            [
+                [], ['_0'], ['_0', '_1'], ['_0', '_1', '_2'], ['_0', '_1', '_2', '_3']
+            ]
+        )
+
+        self.assertEqual(
+            run(5, append(left, right, appended), right),
+            ['_0']*5
         )
 
 if __name__ == '__main__':
