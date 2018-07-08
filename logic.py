@@ -97,7 +97,6 @@ def unify(subs, left, right):
     if isinstance(right, Var):
         return extend_subs(subs, right, left)
     if isinstance(left, list) and isinstance(right, list):
-        # this doesn't support pairs of Head|Tail, add those too?
         if len(left) != len(right):
             return False
         for i in range(len(left)):
@@ -132,6 +131,12 @@ def walkstar(subs, var):
     if isinstance(var, list):
         return [walkstar(subs, elem) for elem in var]
     if isinstance(var, List):
+        rest = walkstar(subs, var.tail)
+        if isinstance(rest, list):
+            return [walkstar(subs, var.head)] + rest
+        return [walkstar(subs, var.head), rest]
+
+        # this is what was returned before List was converted into lists on reification
         return List(walkstar(subs, var.head), walkstar(subs, var.tail))
 
     # this should mean it's an integer
@@ -276,10 +281,6 @@ def member(elem, l):
         conj(head(h, l), eq(elem, h)),
         conj(tail(t, l), lambda: member(elem, t))
     )
-
-def cons_list(left, right):
-    # if the left is a list is cons form then right is a list in list form
-    pass
 
 #def append(head, tail, appended):
 #    return disj(
@@ -454,11 +455,14 @@ class TestCases(unittest.TestCase):
 
         goal = head(h, l)
         self.assertEqual(run(1, goal, h), ['_0'])
-        self.assertEqual(run(1, goal, l), [List['_0':'_1']])
+        self.assertEqual(run(1, goal, l), [['_0', '_1']])
 
         goal = tail(t, l)
         self.assertEqual(run(1, goal, t), ['_0'])
-        self.assertEqual(run(1, goal, l), [List['_0':'_1']])
+        # this syntax is not ideal, I preferred: List['_0': '_1']
+        # I can't think of something which is both computable and also makes it explicit
+        # that this really means: [_0 | _1]
+        self.assertEqual(run(1, goal, l), [['_0', '_1']])
 
         goal = conj(
             tail(t, l),
@@ -481,7 +485,13 @@ class TestCases(unittest.TestCase):
         self.assertEqual(run(5, goal, one), [1, 2, 3])
 
         goal = member(1, one)
-        self.assertEqual(run(5, goal, one), [1, 2, 3])
+        self.assertEqual(run(5, goal, one), [
+            [1, '_0'],
+            ['_0', 1, '_1'],
+            ['_0', '_1', 1, '_2'],
+            ['_0', '_1', '_2', 1, '_3'],
+            ['_0', '_1', '_2', '_3', 1, '_4'],
+        ])
 
 if __name__ == '__main__':
     unittest.main()
