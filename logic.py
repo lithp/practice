@@ -485,6 +485,20 @@ def conj(*goals, _s):
     # now, for every part of stream, try to satisfy the rest of the goals with it
     yield from emit(stream, rest)
 
+def conde(*options):
+    '''
+    conde(
+      (goal1, goal2),
+      (goal3, goal3)
+    ) -> disj(
+      conj(goal1, goal2),
+      conj(coal3, goal4)
+    )
+    '''
+    return disj(*(
+        conj(*goals) for goals in options
+    ))
+
 # some list helpers
 
 def head(head, l):
@@ -527,9 +541,9 @@ def append(front, back, appended):
     Pattern matching is pretty nice, isn't it?
     '''
     front_head, front_rest, appended_rest = vars(3)
-    return disj(
-        conj(null(front), eq(back, appended)),
-        conj(
+    return conde(
+        (null(front), eq(back, appended)),
+        (
             cons(front_head, front_rest, front),
             lambda: append(front_rest, back, appended_rest),
             cons(front_head, appended_rest, appended)
@@ -939,6 +953,21 @@ class TestCases(unittest.TestCase):
         self.assertEqual(
             run(5, append(left, right, appended), right),
             ['_0']*5
+        )
+
+    def testConde(self):
+        x, y = vars(2)
+
+        def either():
+            return conde(
+                (eq(x, 5), eq(x, 5)),
+                (eq(x, 5), eq(x, 10)),
+                (eq(x, y), eq(y, 4))
+            )
+
+        self.assertEqual(
+            run(2, either(), x),
+            [5, 4]
         )
 
 if __name__ == '__main__':
