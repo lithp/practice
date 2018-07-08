@@ -93,6 +93,9 @@ Constraints (http://scheme2011.ucombinator.org/papers/Alvis2011.pdf)
       (and run it with the result of (test)
     - cKanren doesn't support simultanious types of constraints. To do that you need to
       write your own composite constraint functions
+
+Notes:
+- if you had added type annotations would it have been easier to migrate from subs -> state?
 '''
 
 class ListMeta(type):
@@ -132,14 +135,23 @@ class State:
     def __init__(self, subs=None):
         self.subs = subs if subs is not None else dict()
 
-    def ext_subs(key, value):
+    def ext_subs(self, key, value):
         if occurs(self.subs, key, value):
             return False
         newsubs = self.subs.copy()
         newsubs[key] = value
         return State(newsubs)
 
-empty_subs = dict()
+    def __eq__(self, other):
+        if not isinstance(other, State):
+            return False
+        return self.subs == other.subs
+
+def extend_subs(subs, key, value):
+    'Helper function for parts of the code which have not yet migrated'
+    return State(subs).ext_subs(key, value).subs
+
+empty = State()
 
 def walk(subs, variable):
     '''find the value of this variable, it'll either be ground or an unbound variable'''
@@ -161,47 +173,41 @@ def occurs(subs, var, struct):
     # TODO: this needs to also check List's!
     return False
 
-def extend_subs(subs, key, value):
-    if occurs(subs, key, value):
-        return False
-    result = subs.copy()
-    result[key] = value
-    return result
-
-def unify(subs, left, right):
+def unify(state, left, right):
     '''
     Given a left and a right and a set of substitutions, return bindings where the given
     left and right are unified.
     '''
-    if subs is False:
+    if state is False:
         return False
+    subs = state.subs
     left, right = walk(subs, left), walk(subs, right)
 
     if left == right:
-        return subs
+        return state
     if isinstance(left, Var):
-        return extend_subs(subs, left, right)
+        return state.ext_subs(left, right)
     if isinstance(right, Var):
-        return extend_subs(subs, right, left)
+        return state.ext_subs(right, left)
     if isinstance(left, list) and isinstance(right, list):
         if len(left) != len(right):
             return False
         for i in range(len(left)):
-            subs = unify(subs, left[i], right[i])
-        return subs
+            state = unify(state, left[i], right[i])
+        return state
     if isinstance(left, List) and isinstance(right, list):
         if len(right) == 0:
             return False
-        subs = unify(subs, left.head, right[0])
-        subs = unify(subs, left.tail, right[1:])
-        return subs
+        state = unify(state, left.head, right[0])
+        state = unify(state, left.tail, right[1:])
+        return state
     if isinstance(right, List) and isinstance(left, list):
         # I don't want to write the above code twice
-        return unify(subs, right, left)
+        return unify(state, right, left)
     if isinstance(left, List) and isinstance(right, List):
-        subs = unify(subs, left.head, right.head)
-        subs = unify(subs, left.tail, right.tail)
-        return subs
+        state = unify(state, left.head, right.head)
+        state = unify(state, left.tail, right.tail)
+        return state
 
     return False
 
@@ -309,7 +315,7 @@ def eq(left, right, _s):
         yield result
     return
 
-def call_goal(goal, s):
+def call_goal(goal, state):
     'A hack to allow recursion. Sometimes the goals are wrapped in lambdas we must unpack'
     assert(callable(goal))
 
@@ -320,7 +326,7 @@ def call_goal(goal, s):
     sig = signature(goal)
     assert(len(sig.parameters) == 1)
 
-    return goal(s)
+    return goal(state)
 
 @raw_goal
 def disj(*goals, _s):
@@ -343,8 +349,8 @@ def conj(*goals, _s):
             return
 
         first, *rest = subgoals
-        for binding in stream:
-            substream = call_goal(first, binding)
+        for state in stream:
+            substream = call_goal(first, state)
             yield from emit(substream, rest)
             # TODO: all these yield from's lead to an insane stack depth
             # could we do something trampoline-like and just return the new generator?
@@ -400,9 +406,9 @@ def taken(n, stream):
     return list(itertools.islice(stream, n))
 
 def run(n, goal, var):
-    empty_subs = {}
-    results = taken(n, goal(empty_subs))
-    return [reify(result, var) for result in results]
+    empty = State()
+    results = taken(n, goal(empty))
+    return [reify(result.subs, var) for result in results]
 
 # some quick tests
 
@@ -461,50 +467,50 @@ class TestCases(unittest.TestCase):
 
     def testUnify(self):
         x = Var()
-        subs = unify(empty_subs, x, 10)
-        self.assertTrue(subs[x] == 10)
+        state = unify(empty, x, 10)
+        self.assertTrue(state.subs[x] == 10)
 
-        subs = unify(empty_subs, 10, x)
-        self.assertTrue(subs[x] == 10)
+        state = unify(empty, 10, x)
+        self.assertTrue(state.subs[x] == 10)
 
-        self.assertFalse(unify(empty_subs, 10, [x]))
-        self.assertTrue(unify(empty_subs, 10, 10) == {})
-        self.assertTrue(unify(empty_subs, [x], [x]) == {})
+        self.assertFalse(unify(empty, 10, [x]))
+        self.assertEqual(unify(empty, 10, 10), State())
+        self.assertEqual(unify(empty, [x], [x]), State())
 
-        self.assertFalse(unify(empty_subs, x, [x]))
+        self.assertFalse(unify(empty, x, [x]))
 
         y = Var()
-        self.assertTrue(unify(empty_subs, x, y), {x: y})
+        self.assertEqual(unify(empty, x, y), State({x: y}))
 
-        self.assertTrue(unify(empty_subs, [x], [y]) == {x: y})
+        self.assertEqual(unify(empty, [x], [y]), State({x: y}))
 
     def testComplexUnify(self):
         x, y, z = vars(3)
 
-        subs = unify(empty_subs, [10, x, 5], [x, y, z])
-        self.assertTrue(walk(subs, x) == 10)
-        self.assertTrue(walk(subs, y) == 10)
-        self.assertTrue(walk(subs, z) == 5)
+        state = unify(empty, [10, x, 5], [x, y, z])
+        self.assertTrue(walk(state.subs, x) == 10)
+        self.assertTrue(walk(state.subs, y) == 10)
+        self.assertTrue(walk(state.subs, z) == 5)
 
     def testFailReassign(self):
         x = Var()
 
-        self.assertFalse(unify({}, [10, x], [x, 5]))
+        self.assertFalse(unify(empty, [10, x], [x, 5]))
 
-        subs = unify({}, x, 5)
+        subs = unify(empty, x, 5)
         self.assertFalse(unify(subs, 10, x))
 
     def testTakeDisj(self):
         x = Var()
 
-        stream = disj(eq(x, 10), eq(x, 5))(empty_subs)
+        stream = disj(eq(x, 10), eq(x, 5))(empty)
         results = taken(3, stream)
 
         self.assertTrue(len(results) == 2)
         first, second = results
 
-        self.assertTrue(walk(first, x) == 10)
-        self.assertTrue(walk(second, x) == 5)
+        self.assertTrue(walk(first.subs, x) == 10)
+        self.assertTrue(walk(second.subs, x) == 5)
 
     def testRun(self):
         x = Var()
