@@ -550,6 +550,28 @@ def append(front, back, appended):
         )
     )
 
+'''
+What about this syntax?
+
+append = match({
+    (List[:], var, var): True,
+    (List[front_head:front_rest], back, List[front_head:appended_rest]):
+        append(front_rest, back, appended_rest)
+})
+
+append = match(
+    ((List[:], var, var), True),
+    ((List[front_head:front_rest], back, List[front_head:appended_rest]),
+        append(front_rest, back, appended_rest))
+)
+
+append = match(
+    ((List[:], var, var),),
+    ((List[front_head:front_rest], back, List[front_head:appended_rest]),
+        append(front_rest, back, appended_rest))
+)
+'''
+
 # a goal which adds a constraint
 
 @raw_goal
@@ -607,8 +629,16 @@ def prefix(oldsubs, newsubs):
 def taken(n, stream):
     return list(itertools.islice(stream, n))
 
-def run(n, goal, var, state=None):
+def run(n, var, *goals, state=None):
     empty = state if state else State()
+
+    if len(goals) == 0:
+        return []
+    if len(goals) == 1:
+        goal = goals[0]
+    if len(goals) > 1:
+        goal = conj(*goals)
+
     results = taken(n, goal(empty))
     return [reify(result.subs, var) for result in results]
 
@@ -718,94 +748,97 @@ class TestCases(unittest.TestCase):
         x = Var()
 
         goal = eq(x, 10)
-        self.assertEqual(run(1, goal, x), [10])
-        self.assertEqual(run(2, goal, x), [10])
+        self.assertEqual(run(1, x, goal), [10])
+        self.assertEqual(run(2, x, goal), [10])
 
         goal = disj(eq(x, 10), eq(x, 5))
-        self.assertEqual(run(3, goal, x), [10, 5])
+        self.assertEqual(run(3, x, goal), [10, 5])
 
         goal = conj(eq(x, 10), eq(x, 5))
-        self.assertEqual(run(3, goal, x), [])
+        self.assertEqual(run(3, x, goal), [])
 
     def testNull(self):
         x = Var()
 
         goal = null(x)
-        self.assertEqual(run(1, goal, x), [[]])
+        self.assertEqual(run(1, x, goal), [[]])
 
     def testListUnification(self):
         x, y, z = vars(3)
 
         goal = eq(List[x:y], [1, 2])
-        self.assertEqual(run(1, goal, [x, y]), [[1, [2]]])
+        self.assertEqual(run(1, [x, y], goal), [[1, [2]]])
 
         goal = eq(List[x:y], [1])
-        self.assertEqual(run(1, goal, [x, y]), [[1, []]])
+        self.assertEqual(run(1, [x, y], goal), [[1, []]])
 
         goal = eq([1, 2], List[x:y])
-        self.assertEqual(run(1, goal, [x, y]), [[1, [2]]])
+        self.assertEqual(run(1, [x, y], goal), [[1, [2]]])
 
         goal = eq([1], List[x:y])
-        self.assertEqual(run(1, goal, [x, y]), [[1, []]])
+        self.assertEqual(run(1, [x, y], goal), [[1, []]])
 
         # unify x with itself
         goal = eq([x], List[x:y])
-        self.assertEqual(run(1, goal, [x, y]), [['_0', []]])
+        self.assertEqual(run(1, [x, y], goal), [['_0', []]])
 
         # unify x with y (it must be empty!)
         goal = eq([x], List[y:x])
-        self.assertEqual(run(1, goal, [x, y]), [[[], []]])
+        self.assertEqual(run(1, [x, y], goal), [[[], []]])
 
         # the right list has more elements than the left list
         goal = eq([x, y], List[1:[2, 3]])
-        self.assertEqual(run(1, goal, [x, y]), [])
+        self.assertEqual(run(1, [x, y], goal), [])
 
         # both lists are the same size
         goal = eq([x, y, z], List[1:[2, 3]])
-        self.assertEqual(run(1, goal, [x, y, z]), [[1, 2, 3]])
+        self.assertEqual(run(1, [x, y, z], goal), [[1, 2, 3]])
 
     def testHeadandTail(self):
         h, t, l = vars(3)
 
         goal = head(h, l)
-        self.assertEqual(run(1, goal, h), ['_0'])
-        self.assertEqual(run(1, goal, l), [['_0', '_1']])
+        self.assertEqual(run(1, h, goal), ['_0'])
+        self.assertEqual(run(1, l, goal), [['_0', '_1']])
 
         goal = tail(t, l)
-        self.assertEqual(run(1, goal, t), ['_0'])
+        self.assertEqual(run(1, t, goal), ['_0'])
         # this syntax is not ideal, I preferred: List['_0': '_1']
         # I can't think of something which is both computable and also makes it explicit
         # that this really means: [_0 | _1]
-        self.assertEqual(run(1, goal, l), [['_0', '_1']])
+        self.assertEqual(run(1, l, goal), [['_0', '_1']])
 
         goal = conj(
             tail(t, l),
             head(h, l),
             eq(l, [1, 2, 3])
         )
-        self.assertEqual(run(1, goal, h), [1])
-        self.assertEqual(run(1, goal, t), [[2, 3]])
+        self.assertEqual(run(1, h, goal), [1])
+        self.assertEqual(run(1, t, goal), [[2, 3]])
 
     def testAlways(self):
         x = Var()
 
         goal = conj(eq(x, 10), always())
-        self.assertEqual(run(3, goal, x), [10, 10, 10])
+        self.assertEqual(run(3, x, goal), [10, 10, 10])
 
     def testMember(self):
         one = Var()
 
         goal = member(one, [1, 2, 3])
-        self.assertEqual(run(5, goal, one), [1, 2, 3])
+        self.assertEqual(run(5, one, goal), [1, 2, 3])
 
         goal = member(1, one)
-        self.assertEqual(run(5, goal, one), [
+        self.assertEqual(run(5, one, goal), [
             [1, '_0'],
             ['_0', 1, '_1'],
             ['_0', '_1', 1, '_2'],
             ['_0', '_1', '_2', 1, '_3'],
             ['_0', '_1', '_2', '_3', 1, '_4'],
         ])
+
+        goal = conj(member(one, [1, 2, 3]), member(one, [2, 3, 4]))
+        self.assertEqual(run(5, one, goal), [2, 3])
 
     def testGoalWrapperWithS(self):
 
@@ -819,7 +852,7 @@ class TestCases(unittest.TestCase):
         x, y = vars(2)
 
         self.assertEqual(
-            run(1, uni(x, y), x),
+            run(1, x, uni(x, y)),
             ['_0']
         )
 
@@ -854,12 +887,12 @@ class TestCases(unittest.TestCase):
         x, y = vars(2)
 
         self.assertEqual(
-            run(1, conj(eq(x, y), dif(x, y)), x),
+            run(1, x, eq(x, y), dif(x, y)),
             []
         )
 
         self.assertEqual(
-            run(1, conj(eq(x, 10), dif(10, x)), x),
+            run(1, x, eq(x, 10), dif(10, x)),
             []
         )
 
@@ -868,16 +901,16 @@ class TestCases(unittest.TestCase):
         state = State()
 
         self.assertEqual(
-            run(1, conj(dif(x, y), eq(x, y)), x, state=state), []
+            run(1, x, dif(x, y), eq(x, y), state=state), []
         )
 
         self.assertEqual(
-            run(1, conj(dif(x, y), eq(x, 10), eq(y, 10)), x),
+            run(1, x, dif(x, y), eq(x, 10), eq(y, 10)),
             []
         )
 
         self.assertEqual(
-            run(1, conj(dif(x, y), eq(x, 10), eq(y, 9)), x),
+            run(1, x, dif(x, y), eq(x, 10), eq(y, 9)),
             [10]
         )
 
@@ -887,7 +920,7 @@ class TestCases(unittest.TestCase):
         state = State()
 
         self.assertEqual(
-            run(1, conj(eq(x, 10), eq(x, 5)), x, state=state),
+            run(1, x, eq(x, 10), eq(x, 5), state=state),
             []
         )
 
@@ -905,53 +938,53 @@ class TestCases(unittest.TestCase):
         left, right, appended = vars(3)
 
         self.assertEqual(
-            run(2, append([], [1, 2, 3], [1, 2, 3]), left),
+            run(2, left, append([], [1, 2, 3], [1, 2, 3])),
             ['_0']
         )
 
         self.assertEqual(
-            run(2, append([], [1, 2, 3], appended), appended),
+            run(2, appended, append([], [1, 2, 3], appended)),
             [[1, 2, 3]]
         )
 
         self.assertEqual(
-            run(2, append([1], [2, 3], appended), appended),
+            run(2, appended, append([1], [2, 3], appended)),
             [[1, 2, 3]]
         )
 
         self.assertEqual(
-            run(2, append([1], right, [1, 2, 3]), right),
+            run(2, right, append([1], right, [1, 2, 3])),
             [[2, 3]]
         )
 
         self.assertEqual(
-            run(2, append([1, 2, 3], right, [1, 2, 3]), right),
+            run(2, right, append([1, 2, 3], right, [1, 2, 3])),
             [[]]
         )
 
         # TODO: asking for 2 results gets us into an infinite loop...
         self.assertEqual(
-            run(1, append(left, [1, 2, 3], [1, 2, 3]), left),
+            run(1, left, append(left, [1, 2, 3], [1, 2, 3])),
             [[]]
         )
 
         # TODO: asking for 5 results gets us into an infinite loop...
         self.assertEqual(
-            run(4, append(left, right, [1, 2, 3]), right),
+            run(4, right, append(left, right, [1, 2, 3])),
             [
                 [1, 2, 3], [2, 3], [3], []
             ]
         )
 
         self.assertEqual(
-            run(5, append(left, right, appended), left),
+            run(5, left, append(left, right, appended)),
             [
                 [], ['_0'], ['_0', '_1'], ['_0', '_1', '_2'], ['_0', '_1', '_2', '_3']
             ]
         )
 
         self.assertEqual(
-            run(5, append(left, right, appended), right),
+            run(5, right, append(left, right, appended)),
             ['_0']*5
         )
 
@@ -966,7 +999,7 @@ class TestCases(unittest.TestCase):
             )
 
         self.assertEqual(
-            run(2, either(), x),
+            run(2, x, either()),
             [5, 4]
         )
 
