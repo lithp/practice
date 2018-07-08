@@ -96,6 +96,9 @@ Constraints (http://scheme2011.ucombinator.org/papers/Alvis2011.pdf)
 
 Notes:
 - if you had added type annotations would it have been easier to migrate from subs -> state?
+
+TODO:
+- Add dif/2 reification, right now they're hidden
 '''
 
 class ListMeta(type):
@@ -451,6 +454,12 @@ def dif(left, right, _s):
 
 @raw_goal
 def dif_(left, right, _s):
+    '''
+    A version of dif/2 which can be run from inside run_constraints
+
+    TODO: unify these two? This seems to be what goal-constructor was about.
+    The easiest way might be to allow semidet goals which return a state or None?
+    '''
     if not unify(_s, left, right):
         return _s
 
@@ -735,6 +744,16 @@ class TestCases(unittest.TestCase):
         self.assertEqual(
             run(1, conj(dif(x, y), eq(x, y)), x),
             []
+        )
+
+        self.assertEqual(
+            run(1, conj(dif(x, y), eq(x, 10), eq(y, 10)), x),
+            []
+        )
+
+        self.assertEqual(
+            run(1, conj(dif(x, y), eq(x, 10), eq(y, 9)), x),
+            [10]
         )
 
 if __name__ == '__main__':
