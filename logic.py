@@ -3,6 +3,7 @@
 import unittest
 import functools
 import itertools
+from inspect import signature
 
 '''
 A substitution is a set of bindings for variables
@@ -17,12 +18,6 @@ When you add a new type, it needs to be added to a few places:
     - reify
     - make sure equality works too!
 Is there a way to write code which works for all of these at once?
-'''
-
-'''
-Okay, I'm rewriting this to use generators.
-A goal is a function which accepts a binding and emits a stream of bindings
-Where a stream is a generator
 '''
 
 class ListMeta(type):
@@ -109,6 +104,8 @@ def unify(subs, left, right):
             subs = unify(subs, left[i], right[i])
         return subs
     if isinstance(left, List) and isinstance(right, list):
+        if len(right) == 0:
+            return False
         subs = unify(subs, left.head, right[0])
         subs = unify(subs, left.tail, right[1:])
         return subs
@@ -201,12 +198,25 @@ def eq(left, right):
         return
     return run
 
+def call_goal(goal, s):
+    'A hack to allow recursion. Sometimes the goals are wrapped in lambdas we must unpack'
+    assert(callable(goal))
+
+    sig = signature(goal)
+    if len(sig.parameters) == 0:
+        goal = goal()
+
+    sig = signature(goal)
+    assert(len(sig.parameters) == 1)
+
+    return goal(s)
+
 def disj(*goals):
     # only one of these must be true
     def run(s):
         # careful! This is DFS, ala Prolog. We'd probably prefer BFS, ala Kanren
         for goal in goals:
-            stream = goal(s)
+            stream = call_goal(goal, s)
             yield from stream
     return run
 
@@ -223,12 +233,12 @@ def conj(*goals):
 
         first, *rest = subgoals
         for binding in stream:
-            substream = first(binding)
+            substream = call_goal(first, binding)
             yield from emit(substream, rest)
 
     def run(s):
         first, *rest = goals
-        stream = first(s)
+        stream = call_goal(first, s)
 
         # now, for every part of stream, try to satisfy the rest of the goals with it
         yield from emit(stream, rest)
@@ -260,17 +270,22 @@ def null(var):
 def member(elem, l):
     # elem is a member of list if it's the head, or a member of the tail
     h, t = vars(2)
-    # we have infinite recursion here, we can't build the entire tree until we need it
-    return lambda: disj(
-        conj(head(h, l), eq(elem, h)),
-        conj(tail(t, l), member(elem, t))
-    )
-
-def append(head, tail, appended):
+    # add the lambda to prevent infinite recursion when building out goals
+    # because Python is not lazy, the (huge!) tree of goals is built before we run
     return disj(
-        conj(null(head), eq(tail, appended))  # an empty head means appended is tail
-
+        conj(head(h, l), eq(elem, h)),
+        conj(tail(t, l), lambda: member(elem, t))
     )
+
+def cons_list(left, right):
+    # if the left is a list is cons form then right is a list in list form
+    pass
+
+#def append(head, tail, appended):
+#    return disj(
+#        conj(null(head), eq(tail, appended))  # an empty head means appended is tail
+#
+#    )
 
 # we have some basic goals, let's learn how to read their results:
 
@@ -459,11 +474,14 @@ class TestCases(unittest.TestCase):
         goal = conj(eq(x, 10), always())
         self.assertEqual(run(3, goal, x), [10, 10, 10])
 
-#    def testMember(self):
-#        one = Var()
+    def testMember(self):
+        one = Var()
 
-#        goal = member(one, [1, 2, 3])
-#        self.assertEqual(run(5, goal, one), [1, 2, 3])
+        goal = member(one, [1, 2, 3])
+        self.assertEqual(run(5, goal, one), [1, 2, 3])
+
+        goal = member(1, one)
+        self.assertEqual(run(5, goal, one), [1, 2, 3])
 
 if __name__ == '__main__':
     unittest.main()
