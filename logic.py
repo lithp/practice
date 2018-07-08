@@ -116,19 +116,11 @@ Goals + Streams:
 - Tracing might be made easier by embedding special goals?
 '''
 
-# Add a primitive instrumentation framework
 class Tracer:
     def __init__(self):
         self.queue = queue.Queue()  # we don't really need thread safety but here it is
 
-    def reset(self):
-        try:
-            while self.queue.get_nowait():
-                pass
-        except queue.Empty:
-            pass
-
-    def add(self, *event):
+    def event(self, *event):
         self.queue.put(event)
 
     def events(self):
@@ -141,17 +133,17 @@ class Tracer:
 
     def wrap_goal(self, stream):
         first_time = True
-        self.add(stream.__name__, 'CALL')
+        self.event(stream.__name__, 'CALL')
         try:
             while True:
                 result = next(stream)
                 if first_time:
                     first_time = False
                 else:
-                    self.add(stream.__name__, 'REDO')
+                    self.event(stream.__name__, 'REDO')
                 yield result
         except StopIteration:
-            self.add(stream.__name__, 'FAIL')
+            self.event(stream.__name__, 'FAIL')
 
 class ListMeta(type):
     '''
@@ -207,16 +199,12 @@ class State:
 
     def trace(self, *args):
         args = reify(self.subs, args)
-        self.tracer.add(*args)
+        self.tracer.event(*args)
 
     def __eq__(self, other):
         if not isinstance(other, State):
             return False
         return self.subs == other.subs and self.constraints == other.constraints
-
-def extend_subs(subs, key, value):
-    'Helper function for parts of the code which have not yet migrated'
-    return State(subs).ext_subs(key, value).subs
 
 empty = State()
 
@@ -631,6 +619,12 @@ def run(n, var, *goals, state=None):
     return [reify(result.subs, var) for result in results]
 
 # some quick tests
+
+def extend_subs(subs, key, value):
+    'Helper function for tests which dont care about the entire State'
+    # this feels like a sign that I've done something wrong, maybe extend_subs should
+    # be a method on Substitutions, a subclass of dict?
+    return State(subs).ext_subs(key, value).subs
 
 class TestCases(unittest.TestCase):
     def testWalk(self):
