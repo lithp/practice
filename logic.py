@@ -4,6 +4,7 @@ import unittest
 import functools
 import itertools
 from inspect import signature
+import queue
 
 '''
 A substitution is a set of bindings for variables
@@ -99,7 +100,58 @@ Notes:
 
 TODO:
 - Add dif/2 reification, right now they're hidden
+- Is there a way to add hooks so you can add constraints which are written in-domain?
+  - It'd be cool if you didn't need to call out to Python to write a constraint
+- How inefficient is this, really? Are there any obvious performance/memory wins?
+- How could you integrate this with real python objects for use in real programs?
+- What does support for SLG (tabling) require?
+
+Goals + Streams:
+- currently, when you build goals they're immediately called and turned into a tree of
+  generators we can pull from. This isn't very conducive for tracing support!
+  - Maybe we could pass provenance? Some generator is member.disj.conj.head.eq?
+  - Python is strict, so this would require some kind of special trick
+  - A @goal decorator which takes the result and marks it with a special variable before
+    returning it? This could also prevent you from needing lambda: during recursion?
+- Tracing might be made easier by embedding special goals?
 '''
+
+# Add a primitive instrumentation framework
+class Tracer:
+    def __init__(self):
+        self.queue = queue.Queue()  # we don't really need thread safety but here it is
+
+    def reset(self):
+        try:
+            while self.queue.get_nowait():
+                pass
+        except queue.Empty:
+            pass
+
+    def add(self, *event):
+        self.queue.put(event)
+
+    def events(self):
+        items = []
+        try:
+            while True:
+                items.append(self.queue.get_nowait())
+        except queue.Empty:
+            return items
+
+    def wrap_goal(self, stream):
+        first_time = True
+        self.add(stream.__name__, 'CALL')
+        try:
+            while True:
+                result = next(stream)
+                if first_time:
+                    first_time = False
+                else:
+                    self.add(stream.__name__, 'REDO')
+                yield result
+        except StopIteration:
+            self.add(stream.__name__, 'FAIL')
 
 class ListMeta(type):
     '''
@@ -136,21 +188,26 @@ def vars(count):
 class State:
     'Stores the current execution state'
 
-    def __init__(self, subs=None, constraints=None):
+    def __init__(self, subs=None, constraints=None, tracer=None):
         self.subs = subs if subs is not None else dict()
         self.constraints = constraints if constraints is not None else list()
+        self.tracer = tracer if tracer is not None else Tracer()
 
     def ext_subs(self, key, value):
         if occurs(self.subs, key, value):
             return False
         newsubs = self.subs.copy()
         newsubs[key] = value
-        return State(newsubs, self.constraints)
+        return State(newsubs, self.constraints, self.tracer)
 
     def ext_constraints(self, constraint):
         newc = self.constraints.copy()
         newc.append(constraint)
-        return State(self.subs, newc)
+        return State(self.subs, newc, self.tracer)
+
+    def trace(self, *args):
+        args = reify(self.subs, args)
+        self.tracer.add(*args)
 
     def __eq__(self, other):
         if not isinstance(other, State):
@@ -244,6 +301,8 @@ def walkstar(subs, var):
 
         # this is what was returned before List was converted into lists on reification
         return List(walkstar(subs, var.head), walkstar(subs, var.tail))
+    if isinstance(var, tuple):
+        return (*(walkstar(subs, elem) for elem in var),)
 
     # this should mean it's an integer
     # TODO: decide the domain of variables and constrain them appropriately
@@ -270,6 +329,11 @@ def reify_subs(var, subs):
     if isinstance(var, List):
         subs = reify_subs(var.head, subs)
         subs = reify_subs(var.tail, subs)
+
+    if isinstance(var, tuple):
+        for elem in var:
+            subs = reify_subs(elem, subs)
+        return subs
 
     # we're probably at an integer, so subs should remain unchanged
     return subs
@@ -302,12 +366,12 @@ def raw_goal(func):
             _s <- the set of substitutions
         (but only if the goal accepts kwargs, if you don't care about s then it isn't passed)
     '''
-    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         def run(s):
             if '_s' in signature(func).parameters:
                 kwargs['_s'] = s
             return func(*args, **kwargs)
+        run.__name__ = func.__name__
         return run
     return wrapper
 
@@ -325,22 +389,25 @@ def never():
 def eq(left, right, _s):
     result = unify(_s, left, right)
     if result is False:
+        _s.trace('eq', 'NOT-UNIFIABLE', left, right)
         return
 
     # if nothing has changed there's no need to run the constraints
     if result == _s:
+        _s.trace('eq', 'NOCHANGE', left, right)
         yield result
         return
 
     result = run_constraints(result)
 
     if result is not None:
+        _s.trace('eq', 'SUCCESS', left, right)
         yield result
     return
 
 def run_constraints(state):
     '''
-    TODO: accept a set of variables which have changed, and only consider relevant
+    TODO: accept a set of variables which have changed and only consider relevant
     constraints
     '''
     result = state
@@ -348,9 +415,12 @@ def run_constraints(state):
         func = constraint[0]
         args = constraint[1:]
 
-        result = func(*args)(result)
-        if not result:
-            break
+        goal = func(*args)
+        stream = call_goal(goal, result)
+        try:
+            result = next(stream)
+        except StopIteration:
+            return None
     return result
 
 def call_goal(goal, state):
@@ -364,7 +434,10 @@ def call_goal(goal, state):
     sig = signature(goal)
     assert(len(sig.parameters) == 1)
 
-    return goal(state)
+    # trace execution of this goal
+    stream = goal(state)
+    stream.__name__ = goal.__name__
+    return state.tracer.wrap_goal(stream)
 
 @raw_goal
 def disj(*goals, _s):
@@ -437,6 +510,8 @@ def member(elem, l):
 @raw_goal
 def dif(left, right, _s):
     # TODO: I'm pretty sure I need to add a walk or walkstar somewhere in here?
+    # I don't need to, but I think it'll make this more efficient (unify doesn't need to
+    # do the full walk every time we check this constraint)
 
     if not unify(_s, left, right):
         # terms which are not unifiable will never be equal, happily return!
@@ -452,7 +527,18 @@ def dif(left, right, _s):
     yield _s.ext_constraints((dif_, left, right))
     return
 
+def semidet(func):
+    'Takes a function which returns a State or None and wraps it in a generator'
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if result:
+            yield result
+        return
+    return wrapper
+
 @raw_goal
+@semidet
 def dif_(left, right, _s):
     '''
     A version of dif/2 which can be run from inside run_constraints
@@ -461,13 +547,17 @@ def dif_(left, right, _s):
     The easiest way might be to allow semidet goals which return a state or None?
     '''
     if not unify(_s, left, right):
+        # TODO: we should also remove ourselves from the constraint pool
+        _s.trace('dif_', 'cannot-become-equal')
         return _s
 
     new_bindings = prefix(_s.subs, unify(_s, left, right).subs)
     if not len(new_bindings):
         # if there are no changes then these terms are already equal, we must fail!
+        _s.trace('dif_', 'no-change')
         return
 
+    _s.trace('dif_', 'allowed')
     return _s
 
 def prefix(oldsubs, newsubs):
@@ -483,8 +573,8 @@ def prefix(oldsubs, newsubs):
 def taken(n, stream):
     return list(itertools.islice(stream, n))
 
-def run(n, goal, var):
-    empty = State()
+def run(n, goal, var, state=None):
+    empty = state if state else State()
     results = taken(n, goal(empty))
     return [reify(result.subs, var) for result in results]
 
@@ -740,10 +830,10 @@ class TestCases(unittest.TestCase):
 
     def testDifFailsWhenBecomeEqual(self):
         x, y = vars(2)
+        state = State()
 
         self.assertEqual(
-            run(1, conj(dif(x, y), eq(x, y)), x),
-            []
+            run(1, conj(dif(x, y), eq(x, y)), x, state=state), []
         )
 
         self.assertEqual(
@@ -754,6 +844,26 @@ class TestCases(unittest.TestCase):
         self.assertEqual(
             run(1, conj(dif(x, y), eq(x, 10), eq(y, 9)), x),
             [10]
+        )
+
+    def testTracing(self):
+        # should probably rip this out, not sure it adds much value
+        x = Var()
+        state = State()
+
+        self.assertEqual(
+            run(1, conj(eq(x, 10), eq(x, 5)), x, state=state),
+            []
+        )
+
+        self.assertEqual(
+            state.tracer.events(),
+            [('eq', 'CALL'),
+             ('eq', 'SUCCESS', '_0', 10),
+             ('eq', 'CALL'),
+             ('eq', 'NOT-UNIFIABLE', 10, 5),
+             ('eq', 'FAIL'),
+             ('eq', 'FAIL')]
         )
 
 if __name__ == '__main__':
