@@ -420,13 +420,22 @@ def eq(left, right, _s):
 
 def run_constraints(state):
     '''
+    does a single-pass down all the constraints, assumes that a single pass is enough
+    to come up with a fixpoint
+
     TODO: accept a set of variables which have changed and only consider relevant
     constraints
+
+    It might be convenient here to have some kind of StateDelta which goals return, you
+    could use that to easily tell what the new constraints are and add them at the end
     '''
     result = state
     for constraint in state.constraints:
         func = constraint[0]
         args = constraint[1:]
+
+        # if the constraint wants to remain around it must re-add itself
+        result.constraints.remove(constraint)  # relies on proper constraint equality
 
         goal = func(*args)
         stream = call_goal(goal, result)
@@ -582,39 +591,18 @@ def dif(left, right, _s):
     # do the full walk every time we check this constraint)
 
     if not unify(_s, left, right):
-        # terms which are not unifiable will never be equal, happily return!
+        _s.trace('dif', 'will-never-be-equal')
         return _s
 
     new_bindings = prefix(_s.subs, unify(_s, left, right).subs)
     if not len(new_bindings):
         # if there are no changes then these terms are already equal, we must fail!
+        _s.trace('dif', 'terms-already-equal')
         return
 
     # new_bindings is the list of things which must never become true
-    return _s.ext_constraints((dif_, left, right))
-
-@raw_goal
-@semidet
-def dif_(left, right, _s):
-    '''
-    A version of dif/2 which can be run from inside run_constraints
-
-    TODO: unify these two? This seems to be what goal-constructor was about.
-    The easiest way might be to allow semidet goals which return a state or None?
-    '''
-    if not unify(_s, left, right):
-        # TODO: we should also remove ourselves from the constraint pool
-        _s.trace('dif_', 'cannot-become-equal')
-        return _s
-
-    new_bindings = prefix(_s.subs, unify(_s, left, right).subs)
-    if not len(new_bindings):
-        # if there are no changes then these terms are already equal, we must fail!
-        _s.trace('dif_', 'no-change')
-        return
-
-    _s.trace('dif_', 'allowed')
-    return _s
+    _s.trace('dif', 'deferring-constraint')
+    return _s.ext_constraints((dif, left, right))
 
 def prefix(oldsubs, newsubs):
     'Returns the set of new associations'
@@ -881,7 +869,7 @@ class TestCases(unittest.TestCase):
         constraint = state.constraints[0]
 
         self.assertEqual(len(constraint), 3)
-        self.assertEqual(constraint[0], dif_)
+        self.assertEqual(constraint[0], dif)
 
     def testDifFailsIfAlreadyEqual(self):
         x, y = vars(2)
