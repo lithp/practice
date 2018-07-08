@@ -132,20 +132,27 @@ def vars(count):
 
 class State:
     'Stores the current execution state'
-    def __init__(self, subs=None):
+
+    def __init__(self, subs=None, constraints=None):
         self.subs = subs if subs is not None else dict()
+        self.constraints = constraints if constraints is not None else list()
 
     def ext_subs(self, key, value):
         if occurs(self.subs, key, value):
             return False
         newsubs = self.subs.copy()
         newsubs[key] = value
-        return State(newsubs)
+        return State(newsubs, self.constraints)
+
+    def ext_constraints(self, constraint):
+        newc = self.constraints.copy()
+        newc.append(constraint)
+        return State(self.subs, newc)
 
     def __eq__(self, other):
         if not isinstance(other, State):
             return False
-        return self.subs == other.subs
+        return self.subs == other.subs and self.constraints == other.constraints
 
 def extend_subs(subs, key, value):
     'Helper function for parts of the code which have not yet migrated'
@@ -177,6 +184,9 @@ def unify(state, left, right):
     '''
     Given a left and a right and a set of substitutions, return bindings where the given
     left and right are unified.
+
+    This copies State for every single change. It might be more efficient to return a list
+    of changes which should be made? This would also make dif/2 more efficient.
     '''
     if state is False:
         return False
@@ -311,9 +321,34 @@ def never():
 @raw_goal
 def eq(left, right, _s):
     result = unify(_s, left, right)
-    if result is not False:
+    if result is False:
+        return
+
+    # if nothing has changed there's no need to run the constraints
+    if result == _s:
+        yield result
+        return
+
+    result = run_constraints(result)
+
+    if result is not None:
         yield result
     return
+
+def run_constraints(state):
+    '''
+    TODO: accept a set of variables which have changed, and only consider relevant
+    constraints
+    '''
+    result = state
+    for constraint in state.constraints:
+        func = constraint[0]
+        args = constraint[1:]
+
+        result = func(*args)(result)
+        if not result:
+            break
+    return result
 
 def call_goal(goal, state):
     'A hack to allow recursion. Sometimes the goals are wrapped in lambdas we must unpack'
@@ -394,11 +429,45 @@ def member(elem, l):
         conj(tail(t, l), lambda: member(elem, t))
     )
 
-#def append(head, tail, appended):
-#    return disj(
-#        conj(null(head), eq(tail, appended))  # an empty head means appended is tail
-#
-#    )
+# a goal which adds a constraint
+
+@raw_goal
+def dif(left, right, _s):
+    # TODO: I'm pretty sure I need to add a walk or walkstar somewhere in here?
+
+    if not unify(_s, left, right):
+        # terms which are not unifiable will never be equal, happily return!
+        yield _s
+        return
+
+    new_bindings = prefix(_s.subs, unify(_s, left, right).subs)
+    if not len(new_bindings):
+        # if there are no changes then these terms are already equal, we must fail!
+        return
+
+    # new_bindings is the list of things which must never become true
+    yield _s.ext_constraints((dif_, left, right))
+    return
+
+@raw_goal
+def dif_(left, right, _s):
+    if not unify(_s, left, right):
+        return _s
+
+    new_bindings = prefix(_s.subs, unify(_s, left, right).subs)
+    if not len(new_bindings):
+        # if there are no changes then these terms are already equal, we must fail!
+        return
+
+    return _s
+
+def prefix(oldsubs, newsubs):
+    'Returns the set of new associations'
+    return {
+        key: value
+        for key, value in newsubs.items()
+        if key not in oldsubs
+    }
 
 # we have some basic goals, let's learn how to read their results:
 
@@ -618,6 +687,54 @@ class TestCases(unittest.TestCase):
         self.assertEqual(
             run(1, uni(x, y), x),
             ['_0']
+        )
+
+    def testPrefix(self):
+        self.assertEqual(
+            prefix({1: 1}, {1: 1}),
+            {}
+        )
+
+        self.assertEqual(
+            prefix({1: 1}, {1: 1, 2: 2}),
+            {2: 2}
+        )
+
+        self.assertEqual(
+            prefix({}, {1: 1, 2: 2}),
+            {1: 1, 2: 2}
+        )
+
+    def testDifAddsConstraint(self):
+        x, y = vars(2)
+        state = State()
+
+        gen = dif(x, y)(state)
+        state = taken(1, gen)[0]
+        constraint = state.constraints[0]
+
+        self.assertEqual(len(constraint), 3)
+        self.assertEqual(constraint[0], dif_)
+
+    def testDifFailsIfAlreadyEqual(self):
+        x, y = vars(2)
+
+        self.assertEqual(
+            run(1, conj(eq(x, y), dif(x, y)), x),
+            []
+        )
+
+        self.assertEqual(
+            run(1, conj(eq(x, 10), dif(10, x)), x),
+            []
+        )
+
+    def testDifFailsWhenBecomeEqual(self):
+        x, y = vars(2)
+
+        self.assertEqual(
+            run(1, conj(dif(x, y), eq(x, y)), x),
+            []
         )
 
 if __name__ == '__main__':
