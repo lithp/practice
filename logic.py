@@ -451,6 +451,11 @@ def call_goal(goal, state):
 
 @raw_goal
 def disj(*goals, _s):
+    # TODO: I think it'd be cool if we kept a flag in State which specified which
+    # resolution order should be used. Then you could add goals, bfs/0, dfs/0, which
+    # changed the resolution order for all subgoals. disj/* could read that flag when
+    # determining what to do.
+
     # disjunction, provable if any of the goals are provable
     # careful! This is DFS, ala Prolog. We'd probably prefer BFS, ala Kanren
     for goal in goals:
@@ -1000,6 +1005,23 @@ class TestCases(unittest.TestCase):
         self.assertEqual(
             run(2, x, either()),
             [5, 4]
+        )
+
+    def testFacts(self):
+        # a hacky and slow way of adding data:
+        # could you add a way which:
+        # - had better syntax
+        # - indexed things better so the right option was quickly chosen?
+        def child_of(child, parent):
+            return conde(
+                (eq(child, 'bob'), eq(parent, 'alice')),
+                (eq(child, 'bob'), eq(parent, 'drew'))
+            )
+
+        x, y = vars(2)
+        self.assertEqual(
+            run(2, x, child_of(x, 'alice')),
+            ['bob']
         )
 
 if __name__ == '__main__':
