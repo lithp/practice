@@ -353,6 +353,8 @@ Okay, a goal returns a lambda which consumes some bindings and emits a stream of
 A stream can be either: None, a pair, or a thunk
 '''
 
+# some decorators
+
 def raw_goal(func):
     '''
     A goal is a function which takes:
@@ -375,6 +377,18 @@ def raw_goal(func):
         return run
     return wrapper
 
+def semidet(func):
+    'Takes a function which returns a State or None and wraps it in a generator'
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if result:
+            yield result
+        return
+    return wrapper
+
+# some goals
+
 @raw_goal
 def always(_s):
     while True:
@@ -386,6 +400,7 @@ def never():
     yield  # tell Python that this is a generator
 
 @raw_goal
+@semidet
 def eq(left, right, _s):
     result = unify(_s, left, right)
     if result is False:
@@ -395,15 +410,13 @@ def eq(left, right, _s):
     # if nothing has changed there's no need to run the constraints
     if result == _s:
         _s.trace('eq', 'NOCHANGE', left, right)
-        yield result
-        return
+        return result
 
     result = run_constraints(result)
 
     if result is not None:
         _s.trace('eq', 'SUCCESS', left, right)
-        yield result
-    return
+        return result
 
 def run_constraints(state):
     '''
@@ -508,6 +521,7 @@ def member(elem, l):
 # a goal which adds a constraint
 
 @raw_goal
+@semidet
 def dif(left, right, _s):
     # TODO: I'm pretty sure I need to add a walk or walkstar somewhere in here?
     # I don't need to, but I think it'll make this more efficient (unify doesn't need to
@@ -515,8 +529,7 @@ def dif(left, right, _s):
 
     if not unify(_s, left, right):
         # terms which are not unifiable will never be equal, happily return!
-        yield _s
-        return
+        return _s
 
     new_bindings = prefix(_s.subs, unify(_s, left, right).subs)
     if not len(new_bindings):
@@ -524,18 +537,7 @@ def dif(left, right, _s):
         return
 
     # new_bindings is the list of things which must never become true
-    yield _s.ext_constraints((dif_, left, right))
-    return
-
-def semidet(func):
-    'Takes a function which returns a State or None and wraps it in a generator'
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        result = func(*args, **kwargs)
-        if result:
-            yield result
-        return
-    return wrapper
+    return _s.ext_constraints((dif_, left, right))
 
 @raw_goal
 @semidet
@@ -776,10 +778,11 @@ class TestCases(unittest.TestCase):
     def testGoalWrapperWithS(self):
 
         @raw_goal
+        @semidet
         def uni(left, right, _s):
             result = unify(_s, left, right)
             if result is not False:
-                yield result
+                return result
 
         x, y = vars(2)
 
