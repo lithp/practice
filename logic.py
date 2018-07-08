@@ -902,6 +902,23 @@ class TestCases(unittest.TestCase):
             [10]
         )
 
+    def testDifSticksAroundWhenNecessary(self):
+        x, y = vars(2)
+
+        self.assertEqual(
+            # when you run an unrelated goal the constraints are checked
+            # make sure the constraint re-adds itself so it can fire later
+            run(1, x, dif(x, 10), eq(y, 4), eq(x, 10)),
+            []
+        )
+
+        self.assertEqual(
+            # dif() should notice that the second goal doesn't sasitfy it and stick
+            # around to fail the third goal
+            run(1, x, dif(x, y), eq(y, 4), eq(x, 4)),
+            []
+        )
+
     def testTracing(self):
         # should probably rip this out, not sure it adds much value
         x = Var()
