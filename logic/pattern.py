@@ -3,7 +3,7 @@
 from collections import defaultdict
 import unittest
 
-from logic import Var, vars, run, unify, eq, call_goal
+from logic import Var, vars, run, unify, eq, call_goal, List
 
 class key_defaultdict(defaultdict):
     def __missing__(self, key):
@@ -28,7 +28,7 @@ class MultiGoal:
         figures out which goal matches and delegates to it
         '''
         def run(s):
-            funcs = MultiGoal.find_funcs(s, args, self.signatures)
+            funcs = self.find_funcs(s, args)
             if not funcs:
                 return
             for func, state in funcs:
@@ -42,11 +42,9 @@ class MultiGoal:
         return run
 
     def register(self, func, args):
-        # TODO: maybe we could throw an error here if you provide overlapping definitions?
         self.signatures.append((args, func))
 
-    @staticmethod
-    def find_funcs(state, args, signatures):
+    def find_funcs(self, state, args):
         '''
         We have:
         - a state
@@ -55,12 +53,17 @@ class MultiGoal:
 
         We want to reify our arguments against the state and return all matching functions
         '''
+        returned_any = False
         args = list(args)  # TODO: tell unify about tuples?
-        for sig, func in signatures:
+        for sig, func in self.signatures:
             sig = MultiGoal.preprocess_signature(sig)
             newstate = unify(state, args, sig)
             if newstate:
+                state.trace(self.name, 'match', args, sig)
                 yield func, newstate
+                returned_any = True
+        if not returned_any:
+            state.trace(self.name, 'no-match', args)
 
     @staticmethod
     def preprocess_signature(sig):
@@ -71,6 +74,10 @@ class MultiGoal:
                 item = Var()
             result.append(item)
         return result
+
+    @staticmethod
+    def empty():
+        MultiGoal.goals = key_defaultdict(lambda name: MultiGoal(name))
 
 def pattern(*args):
     def register(func):
@@ -84,6 +91,7 @@ class TestCases(unittest.TestCase):
         '''
         We can match a constant against an empty list
         '''
+        MultiGoal.empty()
 
         @pattern([Var], Var)
         def length(l, size):
@@ -108,9 +116,8 @@ class TestCases(unittest.TestCase):
         )
 
     def testPatternActsAsDisj(self):
-        '''
-        If there are multiple matching patterns, we should return both answers
-        '''
+        'If there are multiple matching patterns, we should return both answers'
+        MultiGoal.empty()
 
         @pattern([Var], Var)
         def length(l, size):
@@ -125,6 +132,51 @@ class TestCases(unittest.TestCase):
             run(2, y, length(x, y)),
             [1, 0]
         )
+
+    def testPatternUnpacksLists(self):
+        'Make sure unification is working as expected'
+        MultiGoal.empty()
+
+        @pattern([10], Var)
+        def length(l, size):
+            return eq(size, 1)
+        @pattern(List[1:2], Var)
+        def length(l, size):
+            return eq(size, 2)
+
+        l, size = vars(2)
+        self.assertEqual(
+            run(2, [l, size], length(l, size)),
+            [
+                [[10], 1],
+                [[1, 2], 2]
+            ]
+        )
+
+        self.assertEqual(
+            [2],
+            run(1, size, length(List[1:2], size)),
+        )
+
+        self.assertEqual(
+            [],
+            run(1, size, length([1, 2], size)),
+        )
+
+        @pattern(List[1:List[2:[]]], Var)
+        def length(l, size):
+            return eq(size, 2)
+
+        self.assertEqual(
+            [2],
+            run(1, size, length([1, 2], size)),
+        )
+
+    def testPatternTurnsStringsIntoVars(self):
+        '''
+        If you want to say things like "these two things must be equal" then you need to
+        be able to name your Vars
+        '''
 
     def testPattern(self):
         @pattern([], 'x', 'x')

@@ -645,8 +645,9 @@ def prefix(oldsubs, newsubs):
 def taken(n, stream):
     return list(itertools.islice(stream, n))
 
-def run(n, var, *goals, state=None):
-    empty = state if state else State()
+def run(n, var, *goals, state=None, trace=False):
+    if not state:
+        state = State()
 
     if len(goals) == 0:
         return []
@@ -655,8 +656,12 @@ def run(n, var, *goals, state=None):
     if len(goals) > 1:
         goal = conj(*goals)
 
-    results = taken(n, goal(empty))
-    return [reify(result.subs, var) for result in results]
+    results = taken(n, goal(state))
+    result = [reify(result.subs, var) for result in results]
+    if trace:
+        for event in state.tracer.events():
+            print(event)
+    return result
 
 # some quick tests
 
