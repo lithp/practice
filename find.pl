@@ -1,6 +1,6 @@
 #!/home/brian/Prolog/swivm/versions/7.7.16/bin/swipl
 
-:- use_module(library(process)).  % things like process_create/3
+:- use_module(library(process)).  % things like process_create/3 so we can shell out
 :- use_module(library(pcre)).     % regular expressions
 :- use_module(library(filesex)).  % helpers for dealing with files
 :- use_module(library(yall)).     % lambda expressions
@@ -37,10 +37,6 @@ type(d), parent(v(Parent)), \+(parent(r(git), Parent))
 type(d), parent(g(File), Child), name('pl$', Child)
   find all the directories which contain Prolog/Perl files
 
-type(d), once((parent(g(File), Child), name('pl$', Child)))
-  find all the directories which contain Prolog/Perl files, but only return each directory
-  once
-
 */
 
 main(Argv) :-
@@ -49,7 +45,7 @@ main(Argv) :-
   rewrite_term(Term, Processed, File),
   (
     each_file('.', File),
-    call(Processed),
+    once(call(Processed)), % it only needs to match once for it to be worth printing
     pretty_print_file(File),
     fail  % repeat, run the above for every file
   ; true). % suppress swipl's complaints that we can't prove anything
