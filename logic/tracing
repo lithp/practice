@@ -1,0 +1,40 @@
+I would like to have better traces, it'd help a lot to be able to print the name of the
+current stackframe.
+
+MultiGoal has the required refactor:
+  run(s), when called, turns func into a goal and then calls that goal
+  Instead of building a ton of conj/disj up-front, we only build them as we come to
+   each goal.
+  This removes the need for the lambda trick!
+
+Hopefully it's as easy as adding a @goal decorator
+
+Okay, now that we don't build the tree all at once, how does that help with tracing?
+
+member(elem, l)
+-> disj(
+     conj(head(h, l), eq(elem, h)),
+     conj(tail(t, l), member(elem, t))
+   )
+-> disj(
+     conj(eq(List[h:_tail], l), eq(elem, h)),
+     conj(eq(List[_head:t], l), member(elem, t))
+   )
+  
+Your depth is 0 until you enter the next member?
+ Different branches of a disj should have the same depth
+
+ All parts of a conj should have the same depth?
+  conj(member(1, l), member(2, l)) <- both have the same depth!
+
+ However, a recursive call should have a higher depth.
+  How do we know when we're recursing?
+ conj threads the state through each item, so it always appears deeper to state
+ Even @goal can't tell whether it's just a new item in conj or a recursive call
+ Does it matter? Maybe that kind of depth is all you care about...
+
+ If you only care about state -> state transitions then what you end up with is the
+  inference chain. You get a list of all the steps which are required to prove the query!
+
+ Okay, let's try that. 
+

@@ -5,6 +5,60 @@ import unittest
 
 from logic import Var, vars, run, unify, eq, call_goal, List
 
+'''
+What about this syntax?
+
+append = match({
+    ([], var, var): True,
+    (List[front_head:front_rest], back, List[front_head:appended_rest]):
+        append(front_rest, back, appended_rest)
+})
+
+append = match(
+    (([], var, var), True),
+    ((List[front_head:front_rest], back, List[front_head:appended_rest]),
+        append(front_rest, back, appended_rest))
+)
+
+append = match(
+    (([], var, var),),
+    ((List[front_head:front_rest], back, List[front_head:appended_rest]),
+        append(front_rest, back, appended_rest))
+)
+
+What about a decorator which intercepts List[:] arguments and creates a goal
+which deconstructs them?
+- how does it know which bindings to use when deconstructing them?
+
+@pattern([], Var, Var)
+def mappend(empty, x, y):
+    return eq(x, y)
+@pattern(List, Var, List)
+def mappend(front, back, appended):
+    with List[front] as (ffirst, frest), List[appended] as (afirst, arest):
+        return conj(eq(ffirst, afirst), lambda: mappend(frest, back, arest))
+
+(For this, [] is empty list, [Var] is singleton, List is a complete cons-cell)
+@pattern(List, Var, List)
+def mappend(ffirst, frest, back, afirst, arest):
+    return conj(eq(ffirst, afirst), lambda: mappend(frest, back, arest))
+
+My idea is this, but python disallowed tuple unpacking and multiple arguments w/ the same
+name:
+@pattern(List, Var, List)
+def mappend((first, front: list), back, (first, rest: list)):
+    return mappend(front, back, rest)
+
+The pythonic way:
+@pattern(List[Var('first'):Var('front')], Var('back'), List[Var('first'):Var('rest')])
+def mappend(front, back, rest):
+    return mappend(front, back, rest)
+
+@pattern(List[Var('first'):], Var, List[Var('first'):])
+def mappend(lfirst: Var('first'), front, back, afirst: Var('first'), rest):
+    pass
+'''
+
 class key_defaultdict(defaultdict):
     def __missing__(self, key):
         if self.default_factory is None:
@@ -149,7 +203,7 @@ class TestCases(unittest.TestCase):
             run(2, [l, size], length(l, size)),
             [
                 [[10], 1],
-                [[1, 2], 2]
+                [[1, 'and', 2], 2]
             ]
         )
 

@@ -131,19 +131,20 @@ class Tracer:
         except queue.Empty:
             return items
 
-    def wrap_goal(self, stream):
+    def wrap_goal(self, stream, depth):
         first_time = True
-        self.event(stream.__name__, 'CALL')
+        self.event(depth, stream.__name__, 'CALL')
         try:
             while True:
                 result = next(stream)
                 if first_time:
                     first_time = False
                 else:
-                    self.event(stream.__name__, 'REDO')
+                    self.event(depth, stream.__name__, 'REDO')
+                # self.event(depth, stream.__name__, result.constraints)
                 yield result
         except StopIteration:
-            self.event(stream.__name__, 'FAIL')
+            self.event(depth, stream.__name__, 'FAIL')
 
 class ListMeta(type):
     '''
@@ -171,7 +172,13 @@ class List(metaclass=ListMeta):
 
 class Var:
     # the actual bindings are kept elsewhere, this is just a placeholder
-    pass
+    def __init__(self, name=None):
+        self.name = name
+    def __repr__(self):
+        if self.name:
+            return "Var({})".format(self.name)
+        else:
+            return "Var"
 
 def vars(count):
     # make it convenient to make a few of these at once
@@ -180,26 +187,38 @@ def vars(count):
 class State:
     'Stores the current execution state'
 
-    def __init__(self, subs=None, constraints=None, tracer=None):
+    def __init__(self, subs=None, constraints=None, tracer=None, stack=None):
         self.subs = subs if subs is not None else dict()
         self.constraints = constraints if constraints is not None else list()
         self.tracer = tracer if tracer is not None else Tracer()
+        self.stack = stack if stack is not None else list()
+
+    def push_frame(self, frame):
+        newstack = self.stack.copy()
+        newstack.append(frame)
+        return State(self.subs, self.constraints, self.tracer, newstack)
 
     def ext_subs(self, key, value):
         if occurs(self.subs, key, value):
             return False
         newsubs = self.subs.copy()
         newsubs[key] = value
-        return State(newsubs, self.constraints, self.tracer)
+        return State(newsubs, self.constraints, self.tracer, self.stack)
+
+    def walk(self, reference):
+        return walk(self.subs, reference)
 
     def ext_constraints(self, constraint):
         newc = self.constraints.copy()
         newc.append(constraint)
-        return State(self.subs, newc, self.tracer)
+        self.trace('adding-constraint', len(newc))
+        return State(self.subs, newc, self.tracer, self.stack)
 
     def trace(self, *args):
         args = reify(self.subs, args)
-        self.tracer.event(*args)
+#        cs = 'constraint-count={}'.format(len(self.constraints))
+        #self.tracer.event(*args, cs)
+        self.tracer.event(len(self.stack), *args)
 
     def __eq__(self, other):
         if not isinstance(other, State):
@@ -285,7 +304,7 @@ def walkstar(subs, var):
         rest = walkstar(subs, var.tail)
         if isinstance(rest, list):
             return [walkstar(subs, var.head)] + rest
-        return [walkstar(subs, var.head), rest]
+        return [walkstar(subs, var.head), 'and', rest]
 
         # this is what was returned before List was converted into lists on reification
         return List(walkstar(subs, var.head), walkstar(subs, var.tail))
@@ -356,6 +375,7 @@ def raw_goal(func):
             _s <- the set of substitutions
         (but only if the goal accepts kwargs, if you don't care about s then it isn't passed)
     '''
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         def run(s):
             if '_s' in signature(func).parameters:
@@ -375,6 +395,38 @@ def semidet(func):
         return
     return wrapper
 
+def goal(func):
+    '''
+    func is a function which accepts some arguments and returns a goal (a run(s))
+    we want to return a function with the same signature, but we don't want to call
+    the original function (and get back the run(s) it gives us) until our run(s) is being
+    called.
+
+    This has two benefits:
+    - Goals no longer need to wrap recursive calls in a lambda
+    - We can attach some metadata and get better stacktraces!
+
+    - It's possible that we never needed this trick for the stack traces, call_goal can
+      easily push a frame for us?
+    '''
+    @functools.wraps(func)
+    def wrapper(*args):
+        def run(s):
+            # Pretty sure this project has more indirection than I've ever used before
+            goal = func(*args)
+
+            #reified = reify(s.subs, args)
+            #goal._frame = (func.__name__, *reified)
+            goal._frame = (func.__name__, *args)
+
+            stream = call_goal(goal, s)  # is this necessary?
+            yield from stream
+        run.__name__ = func.__name__
+        run._nopush = True
+        return run
+    return wrapper
+
+
 # some goals
 
 @raw_goal
@@ -387,6 +439,7 @@ def never():
     return
     yield  # tell Python that this is a generator
 
+@goal
 @raw_goal
 @semidet
 def eq(left, right, _s):
@@ -403,6 +456,7 @@ def eq(left, right, _s):
     result = run_constraints(result)
 
     if result is not None:
+        # TODO: should we use result instead? It's got the newest constraints
         _s.trace('eq', 'SUCCESS', left, right)
         return result
 
@@ -444,10 +498,15 @@ def call_goal(goal, state):
     sig = signature(goal)
     assert(len(sig.parameters) == 1)
 
+    frame = getattr(goal, '_frame', goal.__name__)
+    shouldpush = not getattr(goal, '_nopush', False)
+    if shouldpush:
+        state = state.push_frame(frame)
+
     # trace execution of this goal
     stream = goal(state)
     stream.__name__ = goal.__name__
-    return state.tracer.wrap_goal(stream)
+    return state.tracer.wrap_goal(stream, len(state.stack))
 
 @raw_goal
 def disj(*goals, _s):
@@ -526,14 +585,13 @@ def cons(h, t, l):
 def null(var):
     return eq([], var)
 
+@goal
 def member(elem, l):
     # elem is a member of list if it's the head, or a member of the tail
     h, t = vars(2)
-    # add the lambda to prevent infinite recursion when building out goals
-    # because Python is not lazy, the (huge!) tree of goals is built before we run
     return disj(
         conj(head(h, l), eq(elem, h)),
-        conj(tail(t, l), lambda: member(elem, t))
+        conj(tail(t, l), member(elem, t))
     )
 
 def append(front, back, appended):
@@ -553,61 +611,6 @@ def append(front, back, appended):
             cons(front_head, appended_rest, appended)
         )
     )
-
-'''
-What about this syntax?
-
-append = match({
-    ([], var, var): True,
-    (List[front_head:front_rest], back, List[front_head:appended_rest]):
-        append(front_rest, back, appended_rest)
-})
-
-append = match(
-    (([], var, var), True),
-    ((List[front_head:front_rest], back, List[front_head:appended_rest]),
-        append(front_rest, back, appended_rest))
-)
-
-append = match(
-    (([], var, var),),
-    ((List[front_head:front_rest], back, List[front_head:appended_rest]),
-        append(front_rest, back, appended_rest))
-)
-
-What about a decorator which intercepts List[:] arguments and creates a goal
-which deconstructs them?
-- how does it know which bindings to use when deconstructing them?
-
-@pattern([], Var, Var)
-def mappend(empty, x, y):
-    return eq(x, y)
-@pattern(List, Var, List)
-def mappend(front, back, appended):
-    with List[front] as (ffirst, frest), List[appended] as (afirst, arest):
-        return conj(eq(ffirst, afirst), lambda: mappend(frest, back, arest))
-
-(For this, [] is empty list, [Var] is singleton, List is a complete cons-cell)
-@pattern(List, Var, List)
-def mappend(ffirst, frest, back, afirst, arest):
-    return conj(eq(ffirst, afirst), lambda: mappend(frest, back, arest))
-
-My idea is this, but python disallowed tuple unpacking and multiple arguments w/ the same
-name:
-@pattern(List, Var, List)
-def mappend((first, front: list), back, (first, rest: list)):
-    return mappend(front, back, rest)
-
-The pythonic way:
-@pattern(List[Var('first'):Var('front')], Var('back'), List[Var('first'):Var('rest')])
-def mappend(front, back, rest):
-    return mappend(front, back, rest)
-
-@pattern(List[Var('first'):], Var, List[Var('first'):])
-def mappend(lfirst: Var('first'), front, back, afirst: Var('first'), rest):
-    pass
-'''
-
 
 # a goal which adds a constraint
 
@@ -645,7 +648,7 @@ def prefix(oldsubs, newsubs):
 def taken(n, stream):
     return list(itertools.islice(stream, n))
 
-def run(n, var, *goals, state=None, trace=False):
+def run(n, var, *goals, state=None, trace=False, andstate=False):
     if not state:
         state = State()
 
@@ -656,8 +659,11 @@ def run(n, var, *goals, state=None, trace=False):
     if len(goals) > 1:
         goal = conj(*goals)
 
-    results = taken(n, goal(state))
-    result = [reify(result.subs, var) for result in results]
+    results = taken(n, call_goal(goal, state))
+    if not andstate:
+        result = [reify(result.subs, var) for result in results]
+    else:
+        result = [(result, reify(result.subs, var)) for result in results]
     if trace:
         for event in state.tracer.events():
             print(event)
@@ -826,14 +832,14 @@ class TestCases(unittest.TestCase):
 
         goal = head(h, l)
         self.assertEqual(run(1, h, goal), ['_0'])
-        self.assertEqual(run(1, l, goal), [['_0', '_1']])
+        self.assertEqual(run(1, l, goal), [['_0', 'and', '_1']])
 
         goal = tail(t, l)
         self.assertEqual(run(1, t, goal), ['_0'])
         # this syntax is not ideal, I preferred: List['_0': '_1']
         # I can't think of something which is both computable and also makes it explicit
         # that this really means: [_0 | _1]
-        self.assertEqual(run(1, l, goal), [['_0', '_1']])
+        self.assertEqual(run(1, l, goal), [['_0', 'and', '_1']])
 
         goal = conj(
             tail(t, l),
@@ -857,15 +863,24 @@ class TestCases(unittest.TestCase):
 
         goal = member(1, one)
         self.assertEqual(run(5, one, goal), [
-            [1, '_0'],
-            ['_0', 1, '_1'],
-            ['_0', '_1', 1, '_2'],
-            ['_0', '_1', '_2', 1, '_3'],
-            ['_0', '_1', '_2', '_3', 1, '_4'],
+            [1, 'and', '_0'],
+            ['_0', 1, 'and', '_1'],
+            ['_0', '_1', 1, 'and', '_2'],
+            ['_0', '_1', '_2', 1, 'and', '_3'],
+            ['_0', '_1', '_2', '_3', 1, 'and', '_4'],
         ])
 
         goal = conj(member(one, [1, 2, 3]), member(one, [2, 3, 4]))
         self.assertEqual(run(5, one, goal), [2, 3])
+
+    def testStack(self):
+        results = run(1, 1, member(3, [1, 2, 3]), trace=True, andstate=True)
+        result = results[0]
+        finalstate = result[0]
+
+        print("stack:")
+        for item in reify(finalstate.subs, finalstate.stack):
+            print(item)
 
     def testGoalWrapperWithS(self):
 
@@ -969,13 +984,13 @@ class TestCases(unittest.TestCase):
         )
 
         self.assertEqual(
-            state.tracer.events(),
-            [('eq', 'CALL'),
-             ('eq', 'SUCCESS', '_0', 10),
-             ('eq', 'CALL'),
-             ('eq', 'NOT-UNIFIABLE', 10, 5),
-             ('eq', 'FAIL'),
-             ('eq', 'FAIL')]
+            [(0, 'eq', 'CALL'),
+             (0, 'eq', 'SUCCESS', '_0', 10),
+             (0, 'eq', 'CALL'),
+             (0, 'eq', 'NOT-UNIFIABLE', 10, 5),
+             (0, 'eq', 'FAIL'),
+             (0, 'eq', 'FAIL')],
+            state.tracer.events()
         )
 
     def testAppend(self):
